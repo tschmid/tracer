@@ -19,7 +19,7 @@ class FakePort(object):
         return len(data)
 
 if not fake:
-    ser = serial.Serial('/dev/ttyAMA0', 9600, timeout = 1)
+    ser = serial.Serial('/dev/ttyO4', 9600, timeout = 1)
 else:
     ser = FakePort(fake)
 

@@ -9,6 +9,8 @@
 #   Regulator 12/24V INPUT 10A
 #
 
+import sys
+
 class Result(object):
     """A command result from the controller."""
     props=[]
@@ -33,7 +35,7 @@ class QueryResult(Result):
     def decode(self, data):
         """Decodes the query result, storing results as fields"""
 	if len(data) < 23:
-	    print "Not enough data. Need 23 bytes, got %d" % len(data)
+	    raise Error("Not enough data. Need 23 bytes, got %d" % len(data))
         self.batt_voltage = self.to_float(data[0:2])
         self.pv_voltage = self.to_float(data[2:4])
         # [4:2] reserved; always 0
@@ -99,17 +101,17 @@ class TracerSerial(object):
 
     def from_bytes(self, data):
         """Given bytes from the serial port, returns the appropriate command result"""
-        if data[0:6] != self.sync_header:
-            raise Exception("Invalid sync header")
-        if len(data) != data[8] + 12:
-            raise Exception("Invalid length. Expecting %d, got %d" % (data[8] + 12, len(data)))
-        if not self.tracer.verify_crc(data[6:]):
+        if not self.tracer.verify_crc(data):
             print "invalid crc"
 	    #raise Exception("Invalid CRC")
-        return self.tracer.get_result(data[6:])
+        return self.tracer.get_result(data)
 
     def send_command(self, command):
         to_send = self.to_bytes(command)
+        #for c in bytearray(to_send):
+        #    print "0x%X"%c
+        #print "\n"
+
         if len(to_send) != self.port.write(to_send):
             raise IOError("Error sending command: did not send all bytes")
 
@@ -120,17 +122,74 @@ class TracerSerial(object):
         to_read = 200
 
         b = 0
-        while b >= 0 and read_idx < (to_read + 12):
+
+        synced = False
+
+        #find sync
+        while True:
             b = bytearray(self.port.read(1))
-	    if not b >= 0:
+            if not b:
+                raise IOError("No Sync Byte found.")
+            #print "0x%X"%b[0]
+            if b[0] in [0xAA, 0x55]:
+                # found sync
+                synced = True
+            elif b[0] == self.sync_header[0] or synced:
+                # great, go to comm header
+                break
+            else:
+                raise IOError("Sync error.")
+
+        while True:
+
+            if read_idx < len(self.sync_header): 
+                if b[0] != self.sync_header[read_idx]:
+                    print read_idx, len(self.sync_header), "0x%X"%b[0], "0x%x"%self.sync_header[read_idx]
+                    raise IOError("Error receiving result: invalid sync header")
+            
+            else:
+                # done with init comm
+                break
+
+            b = bytearray(self.port.read(1))
+	    if not b:
 		break
-            buff += b
-            if read_idx < len(self.sync_header) and b[0] != self.sync_header[read_idx]:
-                raise IOError("Error receiving result: invalid sync header")
-            # the location of the read length
-            elif read_idx == 8:
-                to_read = b[0]
+            #print "0x%X"%b[0]
             read_idx += 1
+
+        # read device id, already read before
+        #b = bytearray(self.port.read(1))
+        if not b:
+            raise IOError("Couldn't read device id")
+        buff += b
+        # read command
+        b = bytearray(self.port.read(1))
+        if not b:
+            raise IOError("Couldn't read command")
+        buff += b
+        #read length
+        b = bytearray(self.port.read(1))
+        if not b:
+            raise IOError("Couldn't read length")
+        buff += b
+        length = b[0]
+
+        if length > 0:
+            b = bytearray(self.port.read(length))
+            if not b or len(b) != length:
+                raise IOError("Message too small. Should be %d, got %d"%(length, len(b)))
+            buff.extend(b)
+
+        b = bytearray(self.port.read(2))
+        if not b:
+            raise IOError("Couldn't read crc")
+        buff.extend(b)
+
+        b = bytearray(self.port.read(1))
+        if not b:
+            raise IOError("Couldn't read exit code")
+        buff += b
+
         return self.from_bytes(buff)
 
 class Tracer(object):
@@ -154,6 +213,9 @@ class Tracer(object):
         return data
 
     def get_result(self, data):
+        #for c in data:
+        #    sys.stdout.write("0x%x "%c)
+        #sys.stdout.write("\n")
         if data[1] == QueryCommand().code:
             return QueryResult(data[3:])
 
